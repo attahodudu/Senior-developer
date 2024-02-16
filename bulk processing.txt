@@ -1,0 +1,376 @@
+		THE REASON
+	The reason we bulk processing in oracle database is because when a plsql block is executed and 
+any sql statement is found in that code, the plsql engine will now transfer the sql statemnt to the 
+to the sql engine for every record in the table queried, then the result is passed back to the
+plsql block again. If there are 100 records in the table, there will be 200 control jumps between plsql and
+sql runtime engines, causing slow performance;
+(this process is called context switching) and it reduces performance. The only way to solve this problem is by using
+BULK PROCESSING METHODS
+	Another reason is that bulk collect fetches unlimited number of records to the recordname, while a normal 'select into'
+statement fetches just one record.
+
+
+
+
+set serveroutput on;
+
+				BULK COLLECT
+
+declare
+type dis_typ is table of discount%rowtype;
+v_dis dis_typ;
+begin
+select * bulk collect into  v_dis from discount;
+dbms_output.put_line('--from discount table-->>'||v_dis.count);
+for i in 1..v_dis.count
+loop
+dbms_output.put_line('amount count=>'||v_dis(i).amount);
+end loop;
+end;
+--a normal 'select into' statement only fetches one record to the recordname, but bulk collect fetches unlimited records
+
+--or
+
+declare
+type dis_typ is table of varchar(20);
+v_dis dis_typ;
+begin
+select amount bulk collect into  v_dis from discount;
+for i in 1..v_dis.count
+loop
+dbms_output.put_line('amount count=>'||v_dis(i));
+end loop;
+end;
+/*notice that there's no v_dis(i).amount' here because there is 'select amount bulk collect into' statement
+instead of 'select * bulk collect into' statement then 'discount%rowtype' disappears and replaced with varchar(20). */
+
+
+			BULK COLLECT WITH LIMIT
+declare 
+type number_typ is table of number index by pls_integer;
+cursor cur_num is
+select dis_id from discount;
+v_num number_typ;
+begin
+open cur_num;
+fetch cur_num bulk collect into v_num limit 5;  --fetch cursor into the record
+dbms_output.put_line('the result is:');
+close cur_num;
+for i in 1..v_num.count
+loop
+dbms_output.put_line('dis_details==>' ||v_num(i));
+end loop;
+end;
+/
+--to limit the number records fetched
+
+
+			BULK COLLECT WITH FETCH
+declare
+cursor cur_amount is select amount from discount;
+
+type cur_typ is table of varchar(20);
+v_cur cur_typ;
+
+begin
+open cur_amount;
+loop 
+fetch cur_amount bulk collect into  v_cur;
+exit when v_cur.count=0;
+
+for i in v_cur.first..v_cur.last
+loop
+dbms_output.put_line(i||' '||v_cur(i));
+end loop;
+end loop;
+close cur_amount;
+end;
+
+
+
+		FORALL BULK PROCESSING
+--using forall statement we are collecting data from collections and storing it on tables, while bulk collect is vice-versa
+--first, create a table to store the data, and then a plsql collection(associative array, nested table or varray)
+ 
+declare
+type for_array is table of number index by pls_integer;
+var_array for_array;
+counter_var  number;
+begin
+for i in 1..20 loop     --populating the collection
+var_array (i) :=150+i;
+end loop;
+
+forall inx in 1..20
+insert into for_all(regno) values(var_array(inx));
+
+select count(*) into counter_var from for_all;
+dbms_output.put_line('total rows inserted >>'||counter_var);
+end;
+/
+
+/*
+1 this block: 'select count(*) into counter_var from for_all;
+dbms_output.put_line('total rows inserted >>'||counter_var);' is to make sure we get the output message, hence the reason for 
+counter_var variable.
+
+2 eah time this statement is executed, it adds more records instead of truncating the tyable first and re-populating it.
+*/
+
+
+
+		FORALL WITH INDICES OF CLAUSE
+
+create table for_indices(
+regno number
+);
+
+
+declare
+type indi_nest is table of number;
+var_indi indi_nest := indi_nest(12,45,23,78,98,99,92,34,46,47);
+begin
+var_indi.delete(2,7);
+for i in 1..var_indi.last loop
+if var_indi.exists(i) then
+dbms_output.put_line(var_indi(i));
+else 
+dbms_output.put_line('index does not exist at: '||i);
+end if;
+end loop;
+end;
+
+/* Output:
+12
+index does not exist at: 2
+index does not exist at: 3
+index does not exist at: 4
+index does not exist at: 5
+index does not exist at: 6
+index does not exist at: 7
+34
+46
+47
+*/
+
+--once some indexes are deleted in the collection(e.g when an index doesn't exist anymore), the collection is now sparse
+--so trying to use range(upper and lower bound) 'for 1..something' will not work(ORA-22160: element at index [2] does not exist) 
+--when fetching data from a collection to the table.
+--This is where "indices of" clause comes to the rescue.
+
+
+
+declare
+type indi_nest is table of number;
+var_indi indi_nest := indi_nest(12,45,23,78,98,99,92,34,46,47);
+count_var  number;
+begin
+var_indi.delete(2,7);
+forall i in indices of var_indi
+insert into for_indices(regno) values(var_indi(i));
+
+select count(*) into count_var from for_indices;              --for returning output message[optional]
+dbms_output.put_line('total rows inserted >>'||count_var);    --same here[same]
+end;
+/
+--here we replace 1..10 with indices of var_indi(variable) which will use the avaible indices
+select * from for_indices;
+
+
+
+
+			FORALL WITH VALUES OF CLAUSE
+
+/* 1.'values of' clause is used for manipulating(insert,update,delete) selected element from a sparse or dense collection.
+   2.this clause requires two collections, first: source collection(nested tab) and then 
+   3.index collection(i. nested tab indexed by pls_integer/binary_integer, ii.assoc array) */
+create table val_of(
+regno number
+);
+
+
+declare 
+type nest_tab is table of NUMBER;
+var_source nest_tab :=nest_tab(10,20,30,40,50,60,70,80,90);
+
+type array_tab is table of pls_integer index by pls_integer;    --this index collection is an associative array
+var_index array_tab;
+begin
+var_index(2) :=3;
+var_index(4) :=2;
+var_index(7) :=6;
+var_index(1) :=8;
+var_index(9) :=5;
+forall i in values of var_index
+insert into val_of(regno) values(var_source(i));
+end;
+/
+--this are the index(randomly given by programmer) of index collection. it is sparse
+(2) 
+(4) 
+(7) 
+(1) 
+(9) 
+
+--these are the index of source collection for fetching their data to the table created
+:=3 ;
+:=2 ;
+:=6 ;
+:=8 ;
+:=5 ;
+
+select * from val_of;
+--output:
+     REGNO
+----------
+        80
+        30
+        20
+        60
+        50
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Oracle Bulk Processing Course Content
+
+Target Audience: This course is designed for developers and database administrators who want to improve the performance of their PL/SQL code by utilizing bulk processing techniques.
+
+Course Objectives:
+
+    Understand the concepts of bulk processing in PL/SQL.
+    Master the BULK COLLECT and FORALL statements for efficient data manipulation.
+    Optimize DML operations with bulk techniques.
+    Apply bulk processing concepts to real-world scenarios.
+
+Course Outline:
+
+Module 1: Introduction to Bulk Processing in PL/SQL
+
+    Performance challenges of row-by-row processing.
+    Benefits of bulk processing.
+    Overview of BULK COLLECT and FORALL features.
+
+Module 2: The BULK COLLECT Statement
+
+    Syntax and semantics of BULK COLLECT.
+    Fetching multiple rows into collections (VARRAYs, nested tables, associative arrays).
+    Bulk fetching with cursor result sets.
+    Handling errors and null values while fetching.
+
+Module 3: Working with Collections in PL/SQL
+
+    Creating and manipulating various collection types.
+    Looping through collections for data access and processing.
+    Utilizing collection methods and attributes.
+
+Module 4: The FORALL Statement for Bulk DML
+
+    Syntax and semantics of FORALL.
+    Performing bulk inserts, updates, and deletes.
+    Optimizing DML statements with batching and parallelism.
+    Using FORALL with dynamic SQL.
+
+Module 5: Advanced Bulk Processing Techniques
+
+    Combining BULK COLLECT and FORALL for complex operations.
+    Bulk loading and exporting data.
+    Utilizing bulk processing in procedures and functions.
+    Performance considerations and benchmarking.
+
+Module 6: Real-World Applications of Bulk Processing
+
+    Case studies of bulk processing implementation in various scenarios.
+    Optimizing ETL processes with bulk techniques.
+    Improving data warehouse loading performance.
+    Enhancing the efficiency of data analysis tasks.
+
+Course Exercises:
+
+    Hands-on practice with BULK COLLECT and FORALL statements.
+    Designing and implementing bulk processing solutions for specific problems.
+    Analyzing and interpreting performance gains from bulk techniques.
+
+
+
+
+
+
+
+
+
+
+
+
+
+PL/SQL Dynamic SQL
+
+Dynamic SQL refers to the creation and execution of SQL statements at runtime. In Oracle PL/SQL, dynamic SQL can be achieved using the EXECUTE IMMEDIATE statement or the DBMS_SQL package.
+
+The EXECUTE IMMEDIATE statement allows the execution of SQL statements that are not known at compile time. The statement takes a string argument that contains the SQL statement to be executed. This string argument can be created dynamically at runtime using concatenation or other techniques. Here’s an example:
+Ezoic
+
+DECLARE
+    l_sql_stmt VARCHAR2(1000);
+    l_employee_id number:=1;
+BEGIN
+    l_sql_stmt := 'SELECT * FROM employees WHERE employee_id = ' || l_employee_id;
+    EXECUTE IMMEDIATE l_sql_stmt;
+END;
+
+In the above example, the SELECT statement is constructed dynamically using concatenation and then executed using the EXECUTE IMMEDIATE statement.
+
+The DBMS_SQL package provides a more powerful way to execute dynamic SQL. It allows the creation of SQL statements dynamically, binding of variables, and retrieval of results. Here’s an example:
+
+DECLARE
+    cursor_name integer;
+    rows_processed integer;
+    l_employee_id NUMBER := 100;
+    l_sql_stmt VARCHAR2(1000);
+BEGIN
+    l_sql_stmt := 'SELECT * FROM employees WHERE employee_id = :id';
+    cursor_name := dbms_sql.open_cursor;
+    DBMS_SQL.PARSE(cursor_name, l_sql_stmt, DBMS_SQL.NATIVE);
+    DBMS_SQL.BIND_VARIABLE(cursor_name, ':id', l_employee_id);
+    rows_processed := DBMS_SQL.EXECUTE(cursor_name);
+    DBMS_SQL.CLOSE_CURSOR(cursor_name);
+EXCEPTION
+WHEN OTHERS THEN
+   DBMS_SQL.CLOSE_CURSOR(cursor_name);
+END;
+
+
+DECLARE
+  l_table_name VARCHAR2(30) := 'my_table';
+  l_sql_stmt   VARCHAR2(200);
+BEGIN
+  l_sql_stmt := 'CREATE TABLE ' || l_table_name || ' (id NUMBER, name VARCHAR2(30))';
+  EXECUTE IMMEDIATE l_sql_stmt;
+END;
+
+In this example, the table name is passed as a variable, making it easy to create new tables with different names.
+

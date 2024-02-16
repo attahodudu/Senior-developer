@@ -1,0 +1,438 @@
+				CLUSTERS: tables and indexes
+
+--diff b/w user and schema is that a user is created with no object created inside, 
+while a schema is an user who has at least one object created inside it.
+--partition too is an object. to be visited
+
+desc dba_objects;
+select owner, object_name, object_type from dba_objects where object_name='BOOK1';
+select owner, object_name, object_type from dba_objects where object_name='JOIN_CLUS';
+--getting the deatils of a particular object
+--the 'object name' must be in caps letter.
+
+select table_name, tablespace_name from dba_tables where table_name='BOOK1';
+--GETTING FURTHER INFORMATION FROM OBJECTS
+
+show user; --get the current user
+set linesize 500; --make the output more presentable on sqlplus
+
+/*the essence of indexing the columns especially the id, is because when there's a search for 
+any record in the table, oracle does a full table scan(scanning all records one by one to check whether a condition is met)
+whereas, in indexing, each row is given a rowid(special address) by oracle such that when that row is queried, oracle goes striaght to the
+address and picks out the record instead of scanning through all first, that's why indexing is faster for frequently 
+queried columns.*/
+
+--when a join operation is performed, the engine picks the table involved to a temp tablespace and then picks the columns
+according to the conditions, then presents it to the user.(the processing is done in the temp tablespace)
+
+--nested queries(subqueries) are seen as joins by the dbms engine and performing join operations, diff tables can reside
+on diff tablespace causing perofrmace issues for big queries
+
+--a cluster is a big tablespace/table that consists of tables queried frequently and share a single column for joining.
+--the common column is the cluster key
+--cluster columns tables that will only be selected not modified, similar to index
+--like indexing, join is faster with cluster tables
+--a cluster can contain upto 32 tables
+
+
+STEPS IN CREATING CLUSTER FOR TWO OR MORE TABLES
+grant  create any cluster to clusterr(user);
+
+create cluster join_clus (order_details_id int);
+/*create cluster cluster_name(cluster_key datatype)*/
+
+create index join_idx on cluster join_clus;
+/*create index index_name on cluster cluster_name*/
+
+--syntax example
+create table orderclus(
+order_details_id int primary key not null,
+amount number,
+delivery_address varchar(50),
+delivery_method varchar(20),
+recipient_phone number,
+delivery_fees number,
+discount number,
+cart_id int,
+status char(15),
+est_delivery_from date,
+est_delivery_to date,
+foreign key(cart_id) references cart_item(cart_id)
+) cluster join_clus(order_details_id);
+
+--if you don't want to waste time creating tables from begining and want to create from another table:
+grant select on order_details to clusterr; 	--this privilege must be granted by the user that owns the object, and not sysdba
+grant select on payment_details to clusterr; 	--same as this
+grant create any table to clusterr;		--and this(easier and better)
+grant select any table to clusterr;		--and this(easier and better)
+
+
+--example 
+create table payment1_clust
+cluster joins_clus(order_details_id) as select * from production.payment_details;
+
+create table order_clust
+cluster joins_clus(order_details_id) as select *from production.order_details;
+
+--one cannot create an ordinary table before creating a cluster, one must do otherwise, then create the table using cluster.
+--one can also create index after creating the tables.
+--without clusters, joined tables each have datablocks, while in clusters, they share one datablock
+
+drop cluster join_clus; --one can drop the whole cluster at once
+
+
+--checking indexes on tables
+select index_name,index_type,visibility,status from all_indexes where table_name='PRODUCT';  
+--TABLE_NAME MUST BE IN CAPS LETTER
+
+--checking for tables that have clusters
+select table_name,iot_name,iot_type,external,partitioned,temporary,cluster_name from user_tables;
+
+--using this command to check for the rowids in clustered and non-clustered tables
+select rowid, pay_id,total_amount,order_details_id from payment_clust;
+select rowid, order_details_id,amount from order_clust;
+
+--clustered.....rowid is the same because they are stored in the same location on disk
+AAASzzAAHAAAAJ+AAA   --order_details_id(order_clust table)
+AAASzzAAHAAAAJ+AAA  --order_details_id(payment_clust table)
+
+--non-clustered.... rowid is not the same because they are stored in diff location on disk
+AAAR2pAAHAAAAK3AAA  --order_details_id(order_details table)
+AAAR2rAAHAAAALHAAS  --order_details_id(payment_details table)
+
+--joins both tables together
+select e.*,d.* from order_details e,payment_details d where e.order_details_id=d.order_details_id;
+
+
+
+
+USING ATTRIBUTE CLUSTERING TO IMPROVE PERFORMANCE
+create index inx on sales2(cust_id);
+
+exec dbms_stats.gather_table_stats(null,'sales2');
+--procedure
+
+set autotrace off
+select clustering_factor from user_indexes where index_name='INX'; 
+--INDEX_NAME MUST BE IN CAPS, if the clustering_factor is high e.g 77,345; do this:
+
+alter table sales2 add clustering by linear order(cust_id);
+--or
+alter table sales2 add clustering by linear order(cust_id) yes on load yes on data movement; --preferable
+
+select clustering_factor from user_indexes where index_name='INX';  
+--as the clustering_factor reduces the performance increases 
+
+alter table sales2 drop clustering;
+--command to drop
+
+
+			COLLECTION(NESTED TABLES, VARRAY) AS AN OBJECT
+
+				NESTED TABLE(AS AN OBJECT)
+--creating nested as an object and not in plsql block so that it can be re-used
+--nested table is an unbounded type of collection, means there's no size limit.
+
+create or replace type nested_tab is table of varchar(50); --this nested_tab object is one datatype, so start here.
+/
+
+create table course(
+cid number,
+name varchar(10),
+days_offered nested_tab
+)nested table days_offered store as days_offered;
+/
+
+insert into course(cid,name,days_offered) values(100,'math',nested_tab('tues','wed','fri'));
+
+select * from course;
+
+
+NESTED TABLE OBJECT (WITH MULTIPLE COLUMNS)
+/*creating nested table as an object: this is a user-defined datatype consisting more than one datatypes
+to be used on the creation of a nested_table(the one created as an object) not a normal table*/
+--1
+create or replace type object_nested_type as object(	--this nested... object is more than one datatype, so start here.
+nest_id number,
+nest_name varchar(20)
+);
+/
+
+--2
+create or replace type nested_obj_tab is table of object_nested_type;
+/
+
+--3
+create table dept(
+d_id number,
+details nested_obj_tab
+)nested table details store as elements;
+/
+
+insert into dept(d_id,details) values(10,nested_obj_tab(object_nested_type(123,'sales')));  
+-- the exact way to insert here
+
+select * from dept; 
+--this 'select' option doesn't give the real view
+
+select d_id, details, n.nest_id, n.nest_name from dept n1, table(n1.details) n; 
+--this select option like join is better
+
+select n.d_id,  n1.nest_id, n1.nest_name from dept n, table(n.details) n1; 
+--display result in normalized form-the best
+
+
+update table(select details from dept where d_id=10) a set a.nest_name='accounting' where a.nest_id=123; 
+--updating the nested table inside a table
+--details=column in the main table that uses the nested table datatype
+--a=alias
+
+delete table(select details from dept where d_id=10) a where nest_id=123;   
+--exact way to delete from nested table
+
+
+
+				VARRAY(AS AN OBJECT)
+
+create or replace type obj_varray is varray(4) of varchar(20);
+
+create table inspire(
+id int not null,
+nick_name varchar(20),
+role_models obj_varray
+);
+
+insert into inspire(id,nick_name,role_models) values(1,'vanesa',obj_varray('C.Ronaldo','Oshimen','Dangote'));
+insert into inspire(id,nick_name,role_models) values(2,'jenny jane',obj_varray('Bishop Oyedepo','Pst Adeboye','King Solomon'));
+insert into inspire(id,nick_name,role_models) values(3,'rocky',obj_varray('Big Wiz','Larry Ellison','Xi Jinping'));
+
+select * from inspire;
+
+select t.id, t.nick_name, t1.column_value from inspire t, table(t.role_models) t1;
+--this displays the result in a normalized form
+
+
+--later check updating and deleting a varray
+
+
+
+--diff b/w and similarity nested table, varray, associative array--
+
+1.nested tables requires an external table for it's storage, while varrays are stored in-line with their
+parent record as normal values.
+2.nested tables have no size limit, while varrays have size limit.
+3.every nested table or varray starting with 'declare' is part of a plsql block, while the ones with 
+'create or replace' is created as an object in a schema that another table can use.
+4.in plsql block for nested and varray, records are inserted in the block, either in the 'begin' or declare section,
+while in schema objects, the nested or varray are created first,
+then insertion is done normally in the sql way.
+
+--in nested and varray, the index is automatically set to integer; one can't change it, while in 
+associative array, one must specify the index datatype
+--there's no size-limit in assoc-array
+--nested table and varray can be both created in the plsql block and as schema object too, while assoc array can only be
+used in the plsql block.
+--methods like count, first, last, delete, exists, trim, extend, delete(n), prior(n), next(n), exists are only allowed in
+nested and varray but not in assoc array.
+--limit method is used only in varray.
+
+
+
+
+
+			INDEX ONLY/ORGANIZED TABLE(IOT)
+ 
+
+--IOT must have a primary key
+--a normal relational table is heap orgainzed i.e data is inserted anywhere it can fit.
+--IOT: the insertion of a new row can lead to the re-arrangement of existing rows. it an automatically 'order by primary key'
+--it helps in fast retrieval of data and for a table that has composite key, this method is preferable
+--IOT stores the entire data in the form of a btree structure
+--there's only one i/o operation when retrieving data from an iot compared to two i/o operations in a normal relational table
+--you cannot have an IOT in a cluster
+--alter index is not allowed
+--it supports data compression and less usage of storage disk
+--rows are accessed via logical rowid not physical like in a normal table
+
+
+
+CREATE TABLE "CUSTOMER" 
+   (	"CUSTOMER_ID" NUMBER(*,0) primary key, 
+	"CREDIT_LIMIT" NUMBER
+   ) organization index;
+   
+Insert into PERFORMANCE.CUSTOMER (CUSTOMER_ID,CREDIT_LIMIT) values (1,40);
+Insert into PERFORMANCE.CUSTOMER (CUSTOMER_ID,CREDIT_LIMIT) values (5,500);
+Insert into PERFORMANCE.CUSTOMER (CUSTOMER_ID,CREDIT_LIMIT) values (3,300);
+Insert into PERFORMANCE.CUSTOMER (CUSTOMER_ID,CREDIT_LIMIT) values (2,200);
+Insert into PERFORMANCE.CUSTOMER (CUSTOMER_ID,CREDIT_LIMIT) values (4,400);
+
+select * from customer;
+--after the query, the data will be arranged serially by primary key although the insertion is scattered
+
+
+--checking whether it is an IOT 
+select table_name, iot_type, iot_name from user_tables where TABLE_NAME like 'CUSTOMER'; --remember table name in CAPS LOCK(CUSTOMER)
+
+--validate whether a user segment Was created for the table
+select * from user_segments where SEGMENT_NAME like 'CUSTOMER';  --no user segment was created for IOT 
+
+--validate if a particular segment was created for the index
+SELECT INDEX_NAME, INDEX_TYPE, TABLE_NAME FROM USER_INDEXES WHERE TABLE_NAME LIKE 'CUSTOMER'; -- an index segment was created for the IOT
+
+--confirm whether a segmant was allocated to this particular index
+select * from user_segments where SEGMENT_NAME = 'SYS_IOT_TOP_77365';  --'SYS_IOT_TOP_77365': result from the last query
+
+--this produces one i/o operation
+explain plan for select * from customer where customer_id=1
+select * from table(dbms_xplan.display)
+
+--IOT(overflow)
+/*if you columns that are not accessed frequrntly in data retrieval, 
+you may want to move them to another segment to ensure fast data access*/
+
+
+  CREATE TABLE "MEMBER" 
+   (	"MEMBER_ID" NUMBER, 
+	"FIRST_NAME" VARCHAR2(50 BYTE), 
+	"LAST_NAME" VARCHAR2(50 BYTE), 
+	"RANK" VARCHAR2(20 BYTE), 
+	 PRIMARY KEY ("MEMBER_ID")
+) organization index including first_name  overflow;
+
+
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (1,'Abel','Wolf','Gold');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (2,'Clarita','Franco','Platinum');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (3,'Darryl','Giles','Silver');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (4,'Dorthea','Suarez','Silver');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (5,'Katrina','Wheeler','Silver');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (6,'Lilian','Garza','Silver');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (7,'Ossie','Summers','Gold');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (8,'Paige','Mcfarland','Platinum');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (9,'Ronna','Britt','Platinum');
+Insert into PERFORMANCE.MEMBER (MEMBER_ID,FIRST_NAME,LAST_NAME,RANK) values (10,'Tressie','Short','Bronze');
+
+select * from member;
+
+select table_name, iot_type, iot_name from user_tables where TABLE_NAME like 'MEMBER'; 
+select * from user_segments where SEGMENT_NAME like 'MEMBER';  
+SELECT INDEX_NAME, INDEX_TYPE, TABLE_NAME FROM USER_INDEXES WHERE TABLE_NAME LIKE 'MEMBER'; 
+select * from user_segments where SEGMENT_NAME = 'SYS_IOT_TOP_77382';  
+
+select table_name, iot_type, iot_name from user_tables where IOT_NAME='MEMBER'; 
+--another segment called 'overflow' has been created where the last_name and rank  will be stored, since it is not accessed frequently 
+
+/*member_id, first_name will be stored in the leaf block.(if there were more columns before first_name, 
+they will also be stored in the leaf block; it is columns after the including columns that will stored in the overflow)*/
+
+
+
+			VIRTUAL COLUMNS
+create table accounts(
+acct_no number,
+acct_name varchar(20),
+salary number,
+tithe number generated always as (salary * 0.1) VIRTUAL,
+tax number generated always as (salary * 0.01) VIRTUAL
+);
+
+insert into accounts(acct_no,acct_name,salary) values(222,'mane',200000);
+
+select * from accounts;
+
+
+--'generated always' is optional:
+create table accounting(
+acct_no number,
+acct_name varchar(20),
+salary number,
+tithe number as (salary * 0.1) VIRTUAL,
+tax number as (salary * 0.01) VIRTUAL
+);
+
+insert into accounting(acct_no,acct_name,salary) values(222,'mane',200000);
+select * from accounting;
+
+select * from accounting where commission=2000;
+
+--alter virtual column and change it's expression
+alter table accounts modify tax number as (salary * 0.02);
+
+--alter and add a new virtual column
+alter table accounts add commision number as (salary * 0.005) ;
+
+select column_id, column_name, virtual_column, data_default from user_tab_cols where table_name='ACCOUNTS';
+
+            --lessons on virtual columns
+--only finction based indexes can be defined on the virtual column
+--virtual columns can only perform calculations from data on the same table not from another table
+--no dml can be performed on virtual columns except the the 'select where'
+--it cannot be used in IOTs,clusters,temporary,external tables, only heap organised tables
+--it can be used as a partition key
+
+
+
+				FUNCTION BASED INDEX
+select * from payment_clust where payment_method ='card'; 
+--result excluded the row with 'CARD' in CAPITAL LETTERS
+
+select * from payment_clust where upper(payment_method) =upper('card');  
+/* 1.Temporary solution, it includes the upper and the lower but uses full table scan
+   2.cpu and i/o operation is costly because if there was any index on that column, oracle will not use
+it again but resort to full table scan for the execution. */
+
+
+--permanent solution
+create index idx_based on payment_clust (upper(payment_method));
+--upper(),lower(),soundex(),substr()... one can also use a user-defined function, package function
+--return the same value for the given input i.e deterministic
+--aggregate or analytical function cannot be used e.g count(), min(), max(), avg(), stddev()
+
+
+--run the query again
+select * from payment_clust where upper(payment_method) =upper('card');  
+--this time it uses the index
+/*function on the created index column must be same function in the where clause query
+so that oracle can use the index instead of full table scan. */
+
+                --MOST IMPORTANTLY
+--Use function based index for only queries that have functions in their where clauses.
+--it also evaluates the function in 'insert' and 'update' statements.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--update varray
+UPDATE calendar 
+SET day_date = dbObj_vry(10,14,21,28) 
+WHERE day_name = 'Sunday';
+
+
+--varray in plsql block
+DECLARE
+    vry_obj dbObj_vry    := dbObj_vry();
+BEGIN
+    FOR i IN 1..vry_obj.LIMIT
+    LOOP
+        vry_obj.EXTEND; 
+        vry_obj(i):= 10*i;
+        DBMS_OUTPUT.PUT_LINE(vry_obj(i));    
+    END LOOP;
+END;
+/
